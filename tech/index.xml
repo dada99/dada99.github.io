@@ -7,5 +7,82 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
     <lastBuildDate>Thu, 28 Oct 2021 20:49:40 +0800</lastBuildDate><atom:link href="https://dada99.github.io/tech/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>一次 CoreDNS 问题解决小记</title>
+      <link>https://dada99.github.io/tech/coredns-trouble/</link>
+      <pubDate>Thu, 04 Nov 2021 20:30:14 +0800</pubDate>
+      
+      <guid>https://dada99.github.io/tech/coredns-trouble/</guid>
+      <description>
+        
+          &lt;h2 id=&#34;起因&#34;&gt;起因&lt;/h2&gt;
+&lt;p&gt;其实类似的问题在前一段时间按照我司的 k8s 系统时也有遇到，当时因为专心解决问题，而忘记记录，所以这几天再次安装时候，又遇到了类似问题，觉得有必要记录一下。&lt;/p&gt;
+&lt;p&gt;首先，对于大部分了解 k8s 的专业人士来说，CoreDNS 的是什么以及它的基本功能都比较了解了。这里简单说明一下，CoreDNS 顾名思义，就是一个可以实现 DNS 服务的软件，主要服务于云原生场景，更具地的讲就是作为 k8s 的一个重要组件实现所谓的“服务发现”功能。具体可以参考其官网文档：&lt;a href=&#34;https://coredns.io/manual/toc/&#34;&gt;https://coredns.io/manual/toc/&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;其次，CoreDNS 除了可以为 Pod 内部的应用提供解析 k8s 内部服务的支持，还可以提供与上游 DNS 服务器的集成以及自定义 DNS 的能力，可以参考：&lt;a href=&#34;https://kubernetes.io/zh/docs/tasks/administer-cluster/dns-custom-nameservers/&#34;&gt;https://kubernetes.io/zh/docs/tasks/administer-cluster/dns-custom-nameservers/&lt;/a&gt;。具体 CoreDNS 的功能和配置这里就不多谈了。&lt;/p&gt;
+&lt;h2 id=&#34;问题描述&#34;&gt;问题描述&lt;/h2&gt;
+&lt;p&gt;一般情况下，我司的 k8s 会推荐部署在 IaaS 上，如：OpenStack或者是 VMware 上。也就是，k8s 的所有节点都是以虚拟机的方式运行。所以，k8s 所需的一些资源，主要是 PV，都需要向底层的 Iaa
+请求，这就需要与其进行集成。由于我司的 IaaS 产品都是基于 TLS 加密配置，所以访问的请求都是需要基于 FQDN，也就是类似域名的方式来访问，这就设计了如何进行对应的 DNS 解析问题。无论是 k8s 自己的服务或者是 Pod 中运行的程序都可能会有需求与 IaaS 或者 k8s 意外的服务进行访问，就可能会有 DNS 解析的需要。&lt;/p&gt;
+&lt;p&gt;当时遇到的问题其实是在 k8s 安装好以后，会安装一个容器化应用，其对内/外暴露的服务也是给予 FQDN + TLS 的方式，同时在安装这个应用的时候，安装程序以及相关服务就会对这些服务地址进行解析。言外之意，我需要让 Pod 中运行的程序能够正确地解析目前安装的这个程序的服务地址。&lt;/p&gt;
+&lt;h2 id=&#34;解决方案&#34;&gt;解决方案&lt;/h2&gt;
+&lt;p&gt;当然，大部分人或者比较正规的解决方案应该是为 k8s 的所有节点配置统一的、可用的 DNS 服务（内部），然后在 DNS 服务中增加相应的记录。这样，无论 k8s 需要访问解析什么外部的地址，都可以通过在 DNS 服务中增加记录来解决，无需对 k8s 或者 Pod 做任何配置，这当然也是我后面会在部门的实验环境中采用的方式。但是，由于目前，部门的实验环境并没有配置统一的 DNS 服务，所以，需要采用类似手工的方式解决 DNS 的问题。首先，k8s 安装的时候，对 IaaS NBI 地址的解析是通过 Ansible 脚本在各个节点的 /etc/hosts 文件中添加记录来解决的。&lt;/p&gt;
+&lt;p&gt;但是对于 Pod 中的程序来说，每次都修改 /etc/hosts 略显麻烦，同时如果希望实现更加自动化的方式，好像不是很合适（虽然可以继续依赖 Ansible）。这时就可以利用本文的主角：CoreDNS。通过&lt;a href=&#34;https://kubernetes.io/zh/docs/tasks/administer-cluster/dns-custom-nameservers/&#34;&gt;https://kubernetes.io/zh/docs/tasks/administer-cluster/dns-custom-nameservers/&lt;/a&gt;的一段说明可以简单理解 CoreDNS 在 Pod 进行 DNS 解析时候如何起作用：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;如果你在使用 Deployment 运行 CoreDNS，则该 Deployment 通常会向外暴露为一个具有 静态 IP 地址 Kubernetes 服务。 kubelet 使用 &amp;ndash;cluster-dns=&amp;lt;DNS 服务 IP&amp;gt; 标志将 DNS 解析器的信息传递给每个容器。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;如果 Pod 的 dnsPolicy 设置为 &amp;ldquo;default&amp;rdquo;，则它将从 Pod 运行所在节点继承名称解析配置。 Pod 的 DNS 解析行为应该与节点相同。 但请参阅已知问题。如果你不想这样做，或者想要为 Pod 使用其他 DNS 配置，则可以 使用 kubelet 的 &amp;ndash;resolv-conf 标志。 将此标志设置为 &amp;quot;&amp;quot; 可以避免 Pod 继承 DNS。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;以上内容说明，缺省情况下，Pod 的 DNS 记录来自于 CoreDNS 配置以及运行节点的 DNS 配置，两者都可以影响 Pod 的解析。基于我的需求，选择了修改 CoreDNS 的方式实现手工增加 DNS 记录的目标。&lt;/p&gt;
+&lt;p&gt;CoreDNS 本身的配置是基于插件来实现的，其中可以利用的插件为： hosts，参考文档 &lt;a href=&#34;https://coredns.io/plugins/hosts/&#34;&gt;https://coredns.io/plugins/hosts/&lt;/a&gt;。hosts 这个插件的自我描述为 “enables serving zone data from a /etc/hosts style file.”，实际上，就是利用与 /etc/hosts 相同的语法来定义相关的 DNS 记录。以下为这个插件的使用语法：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;    hosts [FILE [ZONES...]] {
+        [INLINE]
+        ttl SECONDS
+        no_reverse
+        reload DURATION
+        fallthrough [ZONES...]
+    }
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从文档的使用描述可以看出，FILE 是可以用于指定具体的 host 文件的，如果不指定，会使用 CoreDNS 运行主机的 /etc/hosts 文件。在 k8s 环境下，由于 CoreDNS 的 Pod 运行的节点不固定，而且可能是多副本，所以基于节点的 /etc/hosts 文件来添加 DNS 记录相对困难，且不灵活。&lt;/p&gt;
+&lt;p&gt;我采用的方式是语法中的 INCLINE，以下为它的使用描述：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;the hosts file contents inlined in Corefile. If there are any lines before fallthrough then all of them will be treated as the additional content for hosts file. The specified hosts file path will still be read but entries will be overridden.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;使用方式就是以 /etc/hosts 的语法，将需要添加的 DNS 记录填写好。这些 INLINE 定义的记录放在 fallthrough 之前，就将视为新的 hosts 文件中的 DNS 记录。这里的 fallthrough 作用是：如果查询没有找到相关的记录，将会继续按照 CoreDNS 配置中后面的插件定义继续进行查找，这个在我对 k8s 的 CoreDNS 配置进行修改时十分重要，否则，hosts 这个插件的后面的插件都不会进行查询了（至少我是这么理解的）。所以，基于对这个插件的理解，看一下我的修改结果&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;    &lt;span style=&#34;color:#f92672&#34;&gt;apiVersion&lt;/span&gt;: &lt;span style=&#34;color:#ae81ff&#34;&gt;v1&lt;/span&gt;
+    &lt;span style=&#34;color:#f92672&#34;&gt;data&lt;/span&gt;:
+    &lt;span style=&#34;color:#f92672&#34;&gt;Corefile&lt;/span&gt;: |&lt;span style=&#34;color:#e6db74&#34;&gt;
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;        .:53 {
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            errors
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            health {
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            lameduck 5s
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            }
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            ready
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            kubernetes cluster.local in-addr.arpa ip6.arpa {
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            pods insecure
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            fallthrough in-addr.arpa ip6.arpa
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            ttl 30
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            }
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            hosts {
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            192.168.0.100   sample.site.com #以 INLINE 的语法添加的 DNS 记录
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            fallthrough
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            }
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            prometheus :9153
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            forward . /etc/resolv.conf {
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            max_concurrent 1000
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            }
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            cache 30
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            loop
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            reload
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;            loadbalance
+&lt;/span&gt;&lt;span style=&#34;color:#e6db74&#34;&gt;        }&lt;/span&gt;        
+    &lt;span style=&#34;color:#f92672&#34;&gt;kind&lt;/span&gt;: &lt;span style=&#34;color:#ae81ff&#34;&gt;ConfigMap&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样就可以基于修改 CoreDNS 对应的 ConfigMap 来实现 DNS 记录的修改，当然，修改完成后，对应的 CoreDNS Pod 要执行相关的重启或者重建操作。&lt;/p&gt;
+&lt;p&gt;同时，注意这个配置中，hosts 插件下面的 forward 插件会访问 /etc/resolv.conf 文件，这是 Linux 主机定义 DNS 服务器地址的文件（当然这只是结果文件），所以，必须保证这个文件中的内容不能为空，否则 CoreDNS 会无法正常工作。错误日志大致如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt; Recovered from panic in server: &amp;#34;dns://:1553&amp;#34;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;相关的 issue 可以参考：&lt;a href=&#34;https://github.com/coredns/coredns/issues/3735&#34;&gt;https://github.com/coredns/coredns/issues/3735&lt;/a&gt;&lt;/p&gt;
+
+        
+      </description>
+    </item>
+    
   </channel>
 </rss>
